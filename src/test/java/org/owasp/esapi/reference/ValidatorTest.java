@@ -272,6 +272,75 @@ public class ValidatorTest extends TestCase {
         // assertEquals("", result4);
     }
 
+    // Test to confirm that CVE-2022-24891 is fixed. The cause of this was
+    // from a subtle botched regex for 'onsiteURL' in all the versions of
+    // antisamy-esapi.xml that had been there as far back as ESAPI 1.4!
+    // (Its character range '\#-~' matched nearly every printable ASCII
+    // character, including ':', '(' and ')', so "javascript:" URLs were
+    // considered to be valid "onsite" URLs.)
+    public void testJavaScriptURL() throws Exception {
+        System.out.println("testJavaScriptURL");
+
+        String expectedSafeText = "This is safe from XSS. Trust us!";
+        String badVoodoo = "<a href=\"javascript:alert(1)\">" + expectedSafeText + "</a>";
+        Validator instance = ESAPI.validator();
+        ValidationErrorList errorList = new ValidationErrorList();
+        String result = instance.getValidSafeHTML("test", badVoodoo, 100, false, errorList);
+        assertEquals( expectedSafeText, result );
+    }
+
+    // CVE-2022-24891: Script-bearing and protocol-relative URLs must not be
+    // accepted by the 'onsiteURL' regex, however the ':' is spelled.
+    public void testJavaScriptURLVariants() throws Exception {
+        System.out.println("testJavaScriptURLVariants");
+        Validator instance = ESAPI.validator();
+
+        String expectedSafeText = "This is safe from XSS. Trust us!";
+        String[] badURLs = {
+            "javascript:alert(1)",
+            "JavaScript:alert(document.cookie)",
+            "javascript&#58;alert(1)",              // ':' as a numeric entity (canonicalized before scanning)
+            "javascript&colon;top.location=name",   // ':' as the HTML5 named entity '&colon;'
+            "vbscript:msgbox(1)",
+            "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==",
+            "//evil.example.com/xss.html"           // protocol-relative (i.e., offsite) URL
+        };
+
+        // Check every payload before failing, so that each one that gets through is reported.
+        List<String> notRemoved = new ArrayList<String>();
+        int testCase = 0;
+        for (String badURL : badURLs) {
+            String testId = "CVE-2022-24891-" + testCase++;
+            String badVoodoo = "<a href=\"" + badURL + "\">" + expectedSafeText + "</a>";
+            ValidationErrorList errors = new ValidationErrorList();
+            String result = instance.getValidSafeHTML(testId + "-get", badVoodoo, 200, false, errors);
+            boolean isValid = instance.isValidSafeHTML(testId, badVoodoo, 200, false);
+            boolean isValidWithErrors = instance.isValidSafeHTML(testId, badVoodoo, 200, false, errors);
+            if ( !expectedSafeText.equals(result) || isValid || isValidWithErrors || errors.size() != 1 ) {
+                notRemoved.add(testId + ": " + badURL + " => " + result);
+            }
+        }
+        assertTrue("URLs not removed by AntiSamy: " + notRemoved, notRemoved.isEmpty());
+
+        // Legitimate onsite and offsite URLs are still allowed.
+        String[] goodLinks = {
+            "<a href=\"http://www.aspectsecurity.com\">Aspect Security</a>",
+            "<a href=\"https://www.owasp.org/index.php/ESAPI\">ESAPI</a>",
+            "<a href=\"mailto:esapi@owasp.org\">ESAPI</a>",
+            "<a href=\"/esapi/index.html\">ESAPI</a>",
+            "<a href=\"#top\">Top</a>"
+        };
+
+        testCase = 0;
+        for (String goodLink : goodLinks) {
+            String testId = "goodLink-" + testCase++;
+            ValidationErrorList errors = new ValidationErrorList();
+            assertEquals(testId, goodLink, instance.getValidSafeHTML(testId + "-get", goodLink, 200, false, errors));
+            assertTrue(testId, instance.isValidSafeHTML(testId, goodLink, 200, false, errors));
+            assertTrue(testId, errors.isEmpty());
+        }
+    }
+
     public void testIsInvalidFilename() {
         System.out.println("testIsInvalidFilename");
         Validator instance = ESAPI.validator();
